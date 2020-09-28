@@ -1,10 +1,10 @@
 #include <Wire.h>
 #include "MLX90641_API.h"
 #include "MLX9064X_I2C_Driver.h"
-#include <TFT_eSPI.h>                // Include the graphics library (this includes the sprite functions)  
+#include <TFT_eSPI.h>  
  
-const byte MLX90641_address = 0x33; //Default 7-bit unshifted address of the MLX90641
-#define TA_SHIFT 12 //Default shift for MLX90641 in open air
+const byte MLX90641_address = 0x33;
+#define TA_SHIFT 12 
 #define debug  Serial
 #define COLOR_DEPTH 8
 
@@ -15,20 +15,17 @@ paramsMLX90641 MLX90641;
 int errorno = 0;
  
 TFT_eSPI    tft = TFT_eSPI(); 
-TFT_eSprite Display = TFT_eSprite(&tft);  // Create Sprite object "img" with pointer to "tft" object
-// the pointer is used by pushSprite() to push it onto the TFT
+TFT_eSprite Display = TFT_eSprite(&tft);
  
 unsigned long CurTime;
  
 uint16_t TheColor;
 // start with some initial colors
-uint16_t MinTemp = 25;
-uint16_t MaxTemp = 38;
+uint16_t Min_DetectTemp = 15;
+uint16_t Max_DetectTemp = 40;
  
-// variables for interpolated colors
 byte red, green, blue;
  
-// variables for row/column interpolation
 byte i, j, k, row, col, incr;
 float intPoint, val, a, b, c, d, ii;
 byte aLow, aHigh;
@@ -40,27 +37,22 @@ byte BoxHeight = 3;
 int x, y;
 char buf[20];
  
-// variable to toggle the display grid
-int ShowGrid = -1;
- 
-// array for the interpolated array
 float HDTemp[6400];
  
 void setup() {
     Wire.begin();
-    Wire.setClock(2000000); //Increase I2C clock speed to 2M
-    debug.begin(115200); //Fast debug as possible
+    Wire.setClock(2000000);
+    debug.begin(115200);
  
-    // start the display and set the background to black
  
     if (isConnected() == false) {
-        debug.println("MLX90641 not detected at default I2C address. Please check wiring. Freezing.");
+        debug.println("MLX90641 not detected");
         while (1);
     }
     //Get device parameters - We only have to do this once
     int status;
     status = MLX90641_DumpEE(MLX90641_address, eeMLX90641);
-    errorno = status;//MLX90641_CheckEEPROMValid(eeMLX90641);//eeMLX90641[10] & 0x0040;//
+    errorno = status;
  
     if (status != 0) {
         debug.println("Failed to load system parameters");
@@ -74,8 +66,7 @@ void setup() {
         while(1);
     }
  
-    //Once params are extracted, we can release eeMLX90641 array
- 
+
     MLX90641_SetRefreshRate(MLX90641_address, 0x05); //Set sensor  refresh rate(4=8HZ,5=16Hz,6=32Hz,7=64Hz)
  
     tft.begin();
@@ -88,12 +79,9 @@ void setup() {
     Display.fillSprite(TFT_BLACK); 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
-    // get the cutoff points for the color interpolation routines
-    // note this function called when the temp scale is changed
-    Getabcd();
+    Get_abcd();
  
-    // draw a legend with the scale that matches the sensors max and min
-    DrawLegend();    
+    Draw_LeftBar();    
 }
 void loop() {
       BatteryIndicator();
@@ -118,17 +106,22 @@ void loop() {
     DisplayGradient();
  
     //Crosshair in the middle of the screen
-    Display.drawCircle(115, 115, 5, TFT_WHITE);
-    Display.drawFastVLine(115, 105, 20, TFT_WHITE);
-    Display.drawFastHLine(105, 115, 20, TFT_WHITE);
+    Crosshair_display();
+
     //Displaying the temp at the middle of the Screen
  
-    //Push the Sprite to the screen
     Display.pushSprite(0, 0);//(x=0,y=0)
  
     tft.setRotation(3);
     tft.setTextColor(TFT_WHITE);
     tft.drawFloat(HDTemp[35 * 80 + 35], 2, 90, 20);        
+}
+
+void Crosshair_display()
+{
+    Display.drawCircle(115, 115, 5, TFT_WHITE);
+    Display.drawFastVLine(115, 105, 20, TFT_WHITE);
+    Display.drawFastHLine(105, 115, 20, TFT_WHITE);
 }
 
 void BatteryIndicator(){
@@ -171,36 +164,20 @@ void DisplayGradient() {
  
   tft.setRotation(4);
  
-  // rip through 70 rows
   for (row = 0; row < 70; row ++) {
-    // then rip through each 70 cols
     for (col = 0; col < 70; col++) {
       // finally we can draw each the 70 x 70 points, note the call to get interpolated color
-      Display.fillRect((row * 3) + 15, (col * 3) + 15, BoxWidth, BoxHeight, GetColor(HDTemp[row * 80 + col]));
+      Display.fillRect((row * 3) + 15, (col * 3) + 15, BoxWidth, BoxHeight, Color_Display(HDTemp[row * 80 + col]));
     }
   }
 }
 
-// my fast yet effective color interpolation routine
-uint16_t GetColor(float val) {
- 
-  /*
-    pass in value and figure out R G B
-    several published ways to do this I basically graphed R G B and developed simple linear equations
-    again a 5-6-5 color display will not need accurate temp to R G B color calculation
- 
-    equations based on
-    http://web-tech.ga-usa.com/2012/05/creating-a-custom-hot-to-cold-temperature-color-gradient-for-use-with-rrdtool/index.html
- 
-  */
-  
-  //https://programmer.ink/think/color-setting-and-text-display-esp32-learning-tour-arduino-version.html
-  // tft.color565(255,0,0) is red, (0,255,0) is green, (0,0,255) is blue 
+uint16_t Color_Display(float val) {
  
   red = constrain(255.0 / (c - b) * val - ((b * 255.0) / (c - b)), 0, 255);
  
-  if ((val > MinTemp) & (val < a)) {
-    green = constrain(255.0 / (a - MinTemp) * val - (255.0 * MinTemp) / (a - MinTemp), 0, 255);
+  if ((val > Min_DetectTemp) & (val < a)) {
+    green = constrain(255.0 / (a - Min_DetectTemp) * val - (255.0 * Min_DetectTemp) / (a - Min_DetectTemp), 0, 255);
   }
   else if ((val >= a) & (val <= c)) {
     green = 255;
@@ -218,22 +195,20 @@ uint16_t GetColor(float val) {
     blue = 0;
   }
   else if (val > d) {
-    blue = constrain(255.0 / (MaxTemp - d) * val - (d * 255.0) / (MaxTemp - d), 0, 255);
+    blue = constrain(240.0 / (Max_DetectTemp - d) * val - (d * 240.0) / (Max_DetectTemp - d), 0, 240);
   }
  
-  // use the displays color mapping function to get 5-6-5 color palet (R=5 bits, G=6 bits, B-5 bits)
   return Display.color565(red, green, blue);
  
 }
  
-// function to get the cutoff points in the temp vs RGB graph
-void Getabcd() {
-  a = MinTemp + (MaxTemp - MinTemp) * 0.2121;
-  b = MinTemp + (MaxTemp - MinTemp) * 0.3182;
-  c = MinTemp + (MaxTemp - MinTemp) * 0.4242;
-  d = MinTemp + (MaxTemp - MinTemp) * 0.8182;
+void Get_abcd() {
+  a = Min_DetectTemp + (Max_DetectTemp - Min_DetectTemp) * 0.2121;
+  b = Min_DetectTemp + (Max_DetectTemp - Min_DetectTemp) * 0.3182;
+  c = Min_DetectTemp + (Max_DetectTemp - Min_DetectTemp) * 0.4242;
+  d = Min_DetectTemp + (Max_DetectTemp - Min_DetectTemp) * 0.8182;
 }
-float get_point(float *p, uint8_t rows, uint8_t cols, int8_t x, int8_t y)
+float Get_Point(float *p, uint8_t rows, uint8_t cols, int8_t x, int8_t y)
 {
     if (x < 0)
     {
@@ -266,16 +241,14 @@ void set_point(float *p, uint8_t rows, uint8_t cols, int8_t x, int8_t y, float f
     }
     p[y * cols + x] = f;
 }
- 
-// src is a grid src_rows * src_cols
-// dest is a pre-allocated grid, dest_rows*dest_cols
+
 void interpolate_image(float *src, uint8_t src_rows, uint8_t src_cols,
                        float *dest, uint8_t dest_rows, uint8_t dest_cols)
 {
     float mu_x = (src_cols - 1.0) / (dest_cols - 1.0);
     float mu_y = (src_rows - 1.0) / (dest_rows - 1.0);
  
-    float adj_2d[16]; // matrix for storing adjacents
+    float adj_2d[16];
  
     for (uint8_t y_idx = 0; y_idx < dest_rows; y_idx++)
     {
@@ -285,15 +258,14 @@ void interpolate_image(float *src, uint8_t src_rows, uint8_t src_cols,
             float y = y_idx * mu_y;
             get_adjacents_2d(src, adj_2d, src_rows, src_cols, x, y);
  
-            float frac_x = x - (int)x; // we only need the ~delta~ between the points
-            float frac_y = y - (int)y; // we only need the ~delta~ between the points
+            float frac_x = x - (int)x; 
+            float frac_y = y - (int)y; 
             float out = bicubicInterpolate(adj_2d, frac_x, frac_y);
             set_point(dest, dest_rows, dest_cols, x_idx, y_idx, out);
         }
     }
 }
  
-// p is a list of 4 points, 2 to the left, 2 to the right
 float cubicInterpolate(float p[], float x)
 {
     float r = p[1] + (0.5 * x * (p[2] - p[0] + x * (2.0 * p[0] - 5.0 * p[1] + 4.0 * p[2] - p[3] + x * (3.0 * (p[1] - p[2]) + p[3] - p[0]))));
@@ -311,18 +283,14 @@ float bicubicInterpolate(float p[], float x, float y)
     return cubicInterpolate(arr, y);
 }
  
-// src is rows*cols and dest is a 4-point array passed in already allocated!
 void get_adjacents_1d(float *src, float *dest, uint8_t rows, uint8_t cols, int8_t x, int8_t y)
 {
-    // pick two items to the left
-    dest[0] = get_point(src, rows, cols, x - 1, y);
-    dest[1] = get_point(src, rows, cols, x, y);
-    // pick two items to the right
-    dest[2] = get_point(src, rows, cols, x + 1, y);
-    dest[3] = get_point(src, rows, cols, x + 2, y);
+    dest[0] = Get_Point(src, rows, cols, x - 1, y);
+    dest[1] = Get_Point(src, rows, cols, x, y);
+    dest[2] = Get_Point(src, rows, cols, x + 1, y);
+    dest[3] = Get_Point(src, rows, cols, x + 2, y);
 }
  
-// src is rows*cols and dest is a 16-point array passed in already allocated!
 void get_adjacents_2d(float *src, float *dest, uint8_t rows, uint8_t cols, int8_t x, int8_t y)
 {
     float arr[4];
@@ -331,32 +299,28 @@ void get_adjacents_2d(float *src, float *dest, uint8_t rows, uint8_t cols, int8_
         float *row = dest + 4 * (delta_y + 1); // index into each chunk of 4
         for (int8_t delta_x = -1; delta_x < 3; delta_x++)
         { // -1, 0, 1, 2
-            row[delta_x + 1] = get_point(src, rows, cols, x + delta_x, y + delta_y);
+            row[delta_x + 1] = Get_Point(src, rows, cols, x + delta_x, y + delta_y);
         }
     }
 }
  
-// function to draw a legend
-void DrawLegend() {
+void Draw_LeftBar() {
  
-  //color legend with max and min text
   j = 0;
  
-  float inc = (MaxTemp - MinTemp ) / 160.0;
+  float inc = (Max_DetectTemp - Min_DetectTemp ) / 160.0;
  
-  for (ii = MinTemp; ii < MaxTemp; ii += inc) {
-    tft.drawFastHLine(260, 200 - j++, 30, GetColor(ii));
+  for (ii = Min_DetectTemp; ii < Max_DetectTemp; ii += inc) {
+    tft.drawFastHLine(260, 200 - j++, 30, Color_Display(ii));
   }
  
   tft.setTextSize(1);
   tft.setCursor(260, 20);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  sprintf(buf, "%2d/%2d", MaxTemp, (int) (MaxTemp * 1.12) + 32);
-  tft.print(buf);
+  tft.print("HOT");
  
   tft.setTextSize(1);
   tft.setCursor(260, 210);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  sprintf(buf, "%2d/%2d", MinTemp, (int) (MinTemp * 1.12) + 32);
-  tft.print(buf);
+  tft.print("COLD");
 }
